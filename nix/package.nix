@@ -9,6 +9,7 @@
   nodejs,
   importNpmLock,
   makeWrapper,
+  nix-update-script,
   boost,
   openssl,
   curl,
@@ -58,12 +59,14 @@ stdenv.mkDerivation (finalAttrs: {
   pname = "polaris-stream";
   version = "1.2.0";
 
+  strictDeps = true;
+
   src = fetchFromGitHub {
     owner = "papi-ux";
     repo = "polaris";
-    rev = "c639383673d07234d59c7be1c97f7eaa8ae6f0b4";
+    tag = "v${finalAttrs.version}";
     fetchSubmodules = true;
-    hash = "sha256-ugF+pEoUB/2ovp90LR26sFCbFOx4RX8BGArPQQpjIng=";
+    hash = "sha256-SdHI4AX0Lxh72PRzvYDPJTcvlVAeuLrSYk7RhxTLf0Y=";
   };
 
   npmDeps = importNpmLock.buildNodeModules {
@@ -135,24 +138,46 @@ stdenv.mkDerivation (finalAttrs: {
 
   postInstall = ''
     wrapProgram $out/bin/polaris \
-      --prefix PATH : ${lib.makeBinPath [
-        grim
-        labwc
-        wlr-randr
-        which
-        xdpyinfo
-        xwayland
-      ]} \
-      --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [
-        avahi
-        libglvnd
-        mesa
-      ]}
+      --prefix PATH : ${
+        lib.makeBinPath [
+          grim
+          labwc
+          wlr-randr
+          which
+          xdpyinfo
+          xwayland
+        ]
+      } \
+      --prefix LD_LIBRARY_PATH : ${
+        lib.makeLibraryPath [
+          avahi
+          libglvnd
+          mesa
+        ]
+      }
   '';
+
+  doInstallCheck = true;
+  installCheckPhase = ''
+    runHook preInstallCheck
+    $out/bin/polaris --version
+    runHook postInstallCheck
+  '';
+
+  passthru = {
+    updateScript = nix-update-script {
+      extraArgs = [ "--flake" ];
+    };
+    buildFeatures = {
+      browserStream = false;
+      cudaCapture = false;
+    };
+  };
 
   meta = {
     description = "Self-hosted game stream host for Moonlight";
     homepage = "https://github.com/papi-ux/polaris";
+    changelog = "https://github.com/papi-ux/polaris/releases/tag/v${finalAttrs.version}";
     license = lib.licenses.gpl3Only;
     platforms = [ "x86_64-linux" ];
     mainProgram = "polaris";

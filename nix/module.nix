@@ -28,7 +28,41 @@ let
   generatePorts = port: offsets: map (offset: port + offset) offsets;
 
   appsFormat = pkgs.formats.json { };
-  settingsFormat = pkgs.formats.keyValue { };
+
+  settingsValueType = types.nullOr (
+    types.oneOf [
+      types.bool
+      types.int
+      types.float
+      types.str
+      (types.listOf settingsValueType)
+      (types.attrsOf settingsValueType)
+    ]
+  );
+  renderSetting =
+    value:
+    if value == null then
+      ""
+    else if builtins.isBool value then
+      lib.boolToString value
+    else if builtins.isInt value then
+      toString value
+    else if builtins.isFloat value then
+      lib.strings.floatToString value
+    else if builtins.isList value || builtins.isAttrs value then
+      builtins.toJSON value
+    else
+      value;
+  settingsFormat = {
+    type = types.attrsOf settingsValueType;
+    generate =
+      name: value:
+      pkgs.writeText name (
+        lib.generators.toKeyValue {
+          mkKeyValue = key: setting: "${key} = ${renderSetting setting}";
+        } value
+      );
+  };
 
   appsFile = appsFormat.generate "apps.json" cfg.applications;
   configFile = settingsFormat.generate "polaris.conf" cfg.settings;
@@ -36,10 +70,26 @@ let
   hasCustomConfig =
     cfg.applications.apps != [ ]
     || (builtins.length (builtins.attrNames cfg.settings) > 1 || cfg.settings.port != defaultPort);
+
+  sensitiveSettingNames = builtins.filter (
+    name:
+    builtins.any (marker: lib.hasInfix marker (lib.toLower name)) [
+      "api_key"
+      "cookie"
+      "credential"
+      "passphrase"
+      "password"
+      "secret"
+      "token"
+    ]
+  ) (builtins.attrNames cfg.settings);
 in
 {
   imports = [
-    (mkAliasOptionModule [ "services" "polaris-stream" "enableFirewall" ] [ "services" "polaris-stream" "openFirewall" ])
+    (mkAliasOptionModule
+      [ "services" "polaris-stream" "enableFirewall" ]
+      [ "services" "polaris-stream" "openFirewall" ]
+    )
   ];
 
   options.services.polaris-stream = with types; {
@@ -82,8 +132,12 @@ in
     settings = mkOption {
       default = { };
       description = ''
-        Settings rendered into the Polaris configuration file. If this is set,
-        matching settings should be managed through Nix rather than the web UI.
+        Settings rendered into an immutable Polaris configuration file. When any
+        non-default setting is present, the configuration is managed through Nix
+        and cannot be persisted through the web UI.
+
+        Lists and attribute sets are rendered as JSON values. Do not put secrets
+        here because generated Nix store files are readable by all local users.
       '';
       example = literalExpression ''
         {
@@ -97,12 +151,13 @@ in
       type = submodule {
         freeformType = settingsFormat.type;
         options.port = mkOption {
-          type = port;
+          type = types.addCheck port (value: value >= 6 && value <= 65514);
           default = defaultPort;
           description = ''
             Base port. Polaris derives related ports from this value:
             GameStream HTTPS is port - 5, HTTP is port, web UI HTTPS is port + 1,
             stream UDP ports are port + 9 through port + 11, and RTSP is port + 21.
+            Therefore, the base port must be between 6 and 65514.
           '';
         };
       };
@@ -151,6 +206,15 @@ in
   };
 
   config = mkIf cfg.enable {
+    warnings = optionals (sensitiveSettingNames != [ ]) [
+      ''
+        services.polaris-stream.settings contains secret-looking keys:
+        ${builtins.concatStringsSep ", " sensitiveSettingNames}. Values declared
+        here are stored in the world-readable Nix store. Configure secrets through
+        the Polaris web UI or another runtime-only mechanism instead.
+      ''
+    ];
+
     services.polaris-stream.settings.file_apps = mkIf (cfg.applications.apps != [ ]) "${appsFile}";
 
     environment.systemPackages = [ cfg.package ];
@@ -216,12 +280,17 @@ in
       environment.PATH = lib.mkForce null;
 
       serviceConfig = {
+        ExecStartPre = "${pkgs.coreutils}/bin/sleep 5";
         ExecStart = escapeSystemdExecArgs (
           [
-            (if cfg.capSysAdmin then "${config.security.wrapperDir}/polaris-stream" else "${getExe cfg.package}")
+            (
+              if cfg.capSysAdmin then "${config.security.wrapperDir}/polaris-stream" else "${getExe cfg.package}"
+            )
           ]
           ++ optionals hasCustomConfig [ "${configFile}" ]
         );
+        LimitNICE = -10;
+        LimitRTPRIO = 95;
         Restart = "on-failure";
         RestartSec = "5s";
       };
