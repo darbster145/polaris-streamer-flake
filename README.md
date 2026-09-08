@@ -46,9 +46,7 @@ services.polaris-stream = {
     port = 48989;
     sunshine_name = "nixos-polaris";
     encoder = "vaapi";
-    headless_mode = "enabled";
-    linux_use_cage_compositor = "enabled";
-    linux_prefer_gpu_native_capture = "disabled";
+    linux_stream_mode = "headless_stream";
     adaptive_bitrate_enabled = "enabled";
     hdr_mode = 0;
     color_range = 1;
@@ -126,7 +124,7 @@ Set `services.polaris-stream.autoStart = false` to install the service without a
 
 ## Build Features
 
-The packaged build supports DRM/KMS, VAAPI, Wayland, X11, PipeWire, and portal capture. Two upstream features are intentionally disabled in the current package:
+The packaged build supports DRM/KMS, VAAPI, Vulkan Video, Wayland, X11, PipeWire, and portal capture. Two upstream features are intentionally disabled in the current package:
 
 - CUDA-native capture is disabled. NVIDIA encoding available through the prepared FFmpeg build is separate from Polaris's CUDA-native capture path.
 - Experimental Browser Stream support is disabled because its Go dependencies are not yet packaged for an offline Nix build.

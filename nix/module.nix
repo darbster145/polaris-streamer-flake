@@ -237,19 +237,7 @@ in
     hardware.uinput.enable = true;
     boot.kernelModules = [ "uhid" ];
 
-    services.udev.extraRules = ''
-      # Allows Polaris to access /dev/uinput
-      KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", GROUP="input", MODE="0660", TAG+="uaccess"
-
-      # Allows Polaris to access /dev/uhid
-      KERNEL=="uhid", GROUP="input", MODE="0660", TAG+="uaccess"
-
-      # Polaris virtual joypads
-      KERNEL=="hidraw*", ATTRS{name}=="Polaris PS5 (virtual) pad", GROUP="input", MODE="0660", TAG+="uaccess"
-      SUBSYSTEMS=="input", ATTRS{name}=="Polaris X-Box One (virtual) pad", GROUP="input", MODE="0660", TAG+="uaccess"
-      SUBSYSTEMS=="input", ATTRS{name}=="Polaris gamepad (virtual) motion sensors", GROUP="input", MODE="0660", TAG+="uaccess"
-      SUBSYSTEMS=="input", ATTRS{name}=="Polaris Nintendo (virtual) pad", GROUP="input", MODE="0660", TAG+="uaccess"
-    '';
+    services.udev.packages = [ cfg.package ];
 
     services.avahi = {
       enable = mkDefault true;

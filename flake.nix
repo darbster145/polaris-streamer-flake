@@ -41,6 +41,7 @@
             modules = [
               self.nixosModules.default
               {
+                system.stateVersion = "25.11";
                 services.polaris-stream = {
                   enable = true;
                   openFirewall = true;
@@ -92,6 +93,7 @@
             test "${toString service.LimitNICE}" = "-10"
             test "${toString service.LimitRTPRIO}" = "95"
             test "${service.ExecStartPre}" = "${pkgs.coreutils}/bin/sleep 5"
+            test "${toString (builtins.elem cfg.services.polaris-stream.package cfg.services.udev.packages)}" = "1"
 
             ${pkgs.gnugrep}/bin/grep -F 'trusted_subnets = ["10.0.0.0/24","192.168.0.0/16"]' "${configFile}"
             ${pkgs.gnugrep}/bin/grep -F 'global_prep_cmd = [{"do":"true","elevated":false,"undo":"true"}]' "${configFile}"

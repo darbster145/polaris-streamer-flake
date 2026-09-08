@@ -20,6 +20,9 @@
   wayland,
   wayland-protocols,
   wayland-scanner,
+  shaderc,
+  vulkan-headers,
+  vulkan-loader,
   libva,
   libpulseaudio,
   opus,
@@ -51,13 +54,13 @@
 
 let
   preparedFfmpeg = fetchzip {
-    url = "https://github.com/LizardByte/build-deps/releases/download/v2026.516.30821/Linux-x86_64-ffmpeg.tar.gz";
-    hash = "sha256-VT+4qP2FaizCoIBBbBkzbYw4YOvGhuBUoZxWL0IYVZo=";
+    url = "https://github.com/LizardByte/build-deps/releases/download/v2026.724.203728/Linux-x86_64-ffmpeg.tar.gz";
+    hash = "sha256-LCfUaUtO0Oc09JfUvWLxs2Ysu8Te0qafLcS3A0Qe67M=";
   };
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "polaris-stream";
-  version = "1.2.0";
+  version = "1.4.4";
 
   strictDeps = true;
 
@@ -66,7 +69,7 @@ stdenv.mkDerivation (finalAttrs: {
     repo = "polaris";
     tag = "v${finalAttrs.version}";
     fetchSubmodules = true;
-    hash = "sha256-SdHI4AX0Lxh72PRzvYDPJTcvlVAeuLrSYk7RhxTLf0Y=";
+    hash = "sha256-yZ4B5VhUd8kec4rV6VCBg+BSonqkDjqbMJ7H7uL++Wc=";
   };
 
   npmDeps = importNpmLock.buildNodeModules {
@@ -82,6 +85,7 @@ stdenv.mkDerivation (finalAttrs: {
     importNpmLock.hooks.linkNodeModulesHook
     makeWrapper
     wayland-scanner
+    shaderc
   ];
 
   buildInputs = [
@@ -115,6 +119,8 @@ stdenv.mkDerivation (finalAttrs: {
     libxi
     libxcb
     libxtst
+    vulkan-headers
+    vulkan-loader
   ];
 
   cmakeFlags = [
