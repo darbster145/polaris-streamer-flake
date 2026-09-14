@@ -55,7 +55,7 @@
 let
   preparedFfmpeg = fetchzip {
     url = "https://github.com/LizardByte/build-deps/releases/download/v2026.724.203728/Linux-x86_64-ffmpeg.tar.gz";
-    hash = "sha256-LCfUaUtO0Oc09JfUvWLxs2Ysu8Te0qafLcS3A0Qe67M=";
+    hash = "sha256-ERw553AsQ0s/7oEXCiwjJjZEp1hpe9aCgiEBRs0K0R0=";
   };
 in
 stdenv.mkDerivation (finalAttrs: {
