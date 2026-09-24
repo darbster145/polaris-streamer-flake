@@ -7,6 +7,7 @@
   ninja,
   pkg-config,
   nodejs,
+  python3,
   importNpmLock,
   makeWrapper,
   nix-update-script,
@@ -14,6 +15,7 @@
   openssl,
   curl,
   libevdev,
+  libei,
   libdrm,
   libcap,
   pipewire,
@@ -54,13 +56,14 @@
 
 let
   preparedFfmpeg = fetchzip {
-    url = "https://github.com/LizardByte/build-deps/releases/download/v2026.724.203728/Linux-x86_64-ffmpeg.tar.gz";
-    hash = "sha256-ERw553AsQ0s/7oEXCiwjJjZEp1hpe9aCgiEBRs0K0R0=";
+    # Match upstream's NVENC 13.0-compatible bundle. fetchzip needs the unpacked NAR hash.
+    url = "https://github.com/LizardByte/build-deps/releases/download/v2026.713.132551/Linux-x86_64-ffmpeg.tar.gz";
+    hash = "sha256-nHL+JxxMbR5fva/w1tt0BqcDowSAojuV8504he/wbsg=";
   };
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "polaris-stream";
-  version = "1.4.4";
+  version = "1.4.12";
 
   strictDeps = true;
 
@@ -69,7 +72,7 @@ stdenv.mkDerivation (finalAttrs: {
     repo = "polaris";
     tag = "v${finalAttrs.version}";
     fetchSubmodules = true;
-    hash = "sha256-yZ4B5VhUd8kec4rV6VCBg+BSonqkDjqbMJ7H7uL++Wc=";
+    hash = "sha256-QqVhtifdsKl+agDZV8PiPQ/tlB2lQA7YVNZ8X9AQ+90=";
   };
 
   npmDeps = importNpmLock.buildNodeModules {
@@ -82,6 +85,7 @@ stdenv.mkDerivation (finalAttrs: {
     ninja
     pkg-config
     nodejs
+    python3
     importNpmLock.hooks.linkNodeModulesHook
     makeWrapper
     wayland-scanner
@@ -93,6 +97,7 @@ stdenv.mkDerivation (finalAttrs: {
     openssl
     curl
     libevdev
+    libei
     libdrm
     libcap
     pipewire
@@ -130,11 +135,16 @@ stdenv.mkDerivation (finalAttrs: {
     "-DCUDA_FAIL_ON_MISSING=OFF"
     "-DPOLARIS_ALLOW_CUDA_DISABLED_ON_NVIDIA=ON"
     "-DPOLARIS_ENABLE_BROWSER_STREAM=OFF"
+    "-DPOLARIS_BUILD_MULTISEAT_WORKER=OFF"
     "-DPOLARIS_SYSTEM_WAYLAND_PROTOCOLS=ON"
     "-DPOLARIS_DOWNLOAD_PREPARED_FFMPEG=OFF"
     "-DFFMPEG_PREPARED_BINARIES=${preparedFfmpeg}"
     "-DBOOST_USE_STATIC=OFF"
     "-DNPM_OFFLINE=ON"
+    # The NixOS module owns the service; never install into systemd's store path.
+    "-DCMAKE_DISABLE_FIND_PACKAGE_Systemd=ON"
+    "-DPOLARIS_UDEV_RULES_DIR=${placeholder "out"}/lib/udev/rules.d"
+    "-DPOLARIS_MODULES_LOAD_DIR=${placeholder "out"}/lib/modules-load.d"
   ];
 
   postPatch = ''
@@ -166,7 +176,9 @@ stdenv.mkDerivation (finalAttrs: {
   doInstallCheck = true;
   installCheckPhase = ''
     runHook preInstallCheck
-    $out/bin/polaris --version
+    polarisVersionOutput="$(XDG_CONFIG_HOME="$TMPDIR/polaris-install-check" "$out/bin/polaris" --version)"
+    printf '%s\n' "$polarisVersionOutput"
+    [[ "$polarisVersionOutput" == *"Polaris version: ${finalAttrs.version} "* ]]
     runHook postInstallCheck
   '';
 
@@ -177,6 +189,7 @@ stdenv.mkDerivation (finalAttrs: {
     buildFeatures = {
       browserStream = false;
       cudaCapture = false;
+      multiseatWorker = false;
     };
   };
 

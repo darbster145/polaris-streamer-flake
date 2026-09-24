@@ -124,10 +124,11 @@ Set `services.polaris-stream.autoStart = false` to install the service without a
 
 ## Build Features
 
-The packaged build supports DRM/KMS, VAAPI, Vulkan Video, Wayland, X11, PipeWire, and portal capture. Two upstream features are intentionally disabled in the current package:
+The packaged build supports DRM/KMS, VAAPI, Vulkan Video, Wayland, X11, PipeWire, and portal capture. The following upstream features are disabled in the current package:
 
 - CUDA-native capture is disabled. NVIDIA encoding available through the prepared FFmpeg build is separate from Polaris's CUDA-native capture path.
 - Experimental Browser Stream support is disabled because its Go dependencies are not yet packaged for an offline Nix build.
+- The optional multiseat worker is not built. Spaces host integration is not configured by this module.
 
 These exclusions are exposed as `passthru.buildFeatures` on the package so downstream automation can inspect them.
 
