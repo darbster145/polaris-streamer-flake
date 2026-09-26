@@ -14,7 +14,15 @@ concurrency:
 
 jobs:
   flake:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-24.04
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -22,5 +30,16 @@ jobs:
       - name: Install Nix
         uses: cachix/install-nix-action@v31
 
-      - name: Check flake
-        run: nix flake check --print-build-logs
+      - name: Evaluate all Linux outputs
+        run: nix flake check --all-systems --no-build
+
+      - name: Evaluate optional CUDA build
+        env:
+          NIXPKGS_ALLOW_UNFREE: "1"
+        run: >-
+          nix eval --impure --raw --expr
+          'let f = builtins.getFlake (toString ./.);
+          in (f.packages.${{ matrix.system }}.default.override { cudaSupport = true; }).drvPath'
+
+      - name: Build package and run module checks
+        run: nix flake check --system ${{ matrix.system }} --print-build-logs

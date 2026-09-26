@@ -4,10 +4,13 @@ Nix packaging for [Polaris](https://github.com/papi-ux/polaris), a self-hosted g
 
 The flake builds Polaris from source and provides:
 
-- `packages.x86_64-linux.default`
-- `apps.x86_64-linux.default`
+- `packages.<system>.default` and `packages.<system>.polaris-stream`
+- `apps.<system>.default` and `apps.<system>.polaris-stream`
 - `overlays.default`
 - `nixosModules.default`, configured through `services.polaris-stream`
+
+Supported systems are `x86_64-linux` and `aarch64-linux`. The package tracks the
+latest stable release, currently **1.4.12**.
 
 ## NixOS Usage
 
@@ -39,6 +42,7 @@ Then enable Polaris:
 ```nix
 services.polaris-stream = {
   enable = true;
+  serviceUser = "alice"; # An existing NixOS account.
   autoStart = true;
   openFirewall = true;
 
@@ -81,6 +85,27 @@ services.polaris-stream.settings.global_prep_cmd = [
 ];
 ```
 
+For an externally managed configuration, including a file provisioned by a
+secrets manager, use a quoted runtime path:
+
+```nix
+services.polaris-stream = {
+  configFile = "/run/secrets/polaris.conf";
+  openFirewall = true;
+  settings.port = 48989; # Must match the port in the external file.
+};
+```
+
+The module passes this path directly to Polaris without reading or copying the
+file into the Nix store. Startup checks that it exists as a regular file and is
+readable by the service account. Provision it before the service starts; web UI
+edits require write access too. `configFile` cannot be combined with declarative
+`applications` or settings other than `settings.port`. In this mode,
+`settings.port` only determines firewall rules; it does not override the file.
+With the default value, the file must also use port 47989 when opening stream
+ports. Relative paths inside the file still resolve under Polaris's usual
+configuration directory, not alongside the external file.
+
 ## Applications
 
 Applications can also be managed declaratively:
@@ -98,7 +123,10 @@ services.polaris-stream.applications = {
 };
 ```
 
-When at least one application is declared, the module generates `apps.json` and configures Polaris to use it.
+When either applications or environment variables are declared, the module
+generates an immutable `apps.json` and configures Polaris to use it. An
+environment-only declaration uses an empty application list; it does not merge
+with the web UI's library. This also makes the main configuration declarative.
 
 ## DRM/KMS Capture
 
@@ -112,7 +140,11 @@ This is intentionally opt-in because `CAP_SYS_ADMIN` is a broad capability.
 
 ## Service Operation
 
-Polaris runs as a systemd user service tied to the graphical session:
+Polaris runs as a systemd user service and starts with the graphical session by
+default. Like upstream, it is not stopped when the graphical session target
+stops. Its lifetime still depends on the user manager; lingering is needed to
+keep it running after the last login session ends. Restarts requested through
+the web UI or tray are handled by systemd, including after a package upgrade:
 
 ```text
 systemctl --user status polaris-stream
@@ -122,17 +154,126 @@ systemctl --user restart polaris-stream
 
 Set `services.polaris-stream.autoStart = false` to install the service without automatically starting it.
 
+Set `serviceUser` to an existing NixOS account to limit this unit's automatic and
+manual startup to that account's user manager. It also grants the required
+device groups to that account. Other users can still run the packaged binary
+directly. With the default `serviceUser = null`, every user manager can start the
+unit; keep only one instance running to avoid port and device conflicts.
+
+For a dedicated host that should start without a desktop login:
+
+```nix
+services.polaris-stream = {
+  enable = true;
+  startAtBoot = true;
+  serviceUser = "alice"; # An existing account that will run Polaris.
+  settings.linux_stream_mode = "headless_stream";
+};
+```
+
+`serviceUser` and accounts listed in `users` receive the audio, video, render,
+input, and uinput groups used by upstream. With `startAtBoot`, they also receive
+lingering. Restart their sessions after changing groups. A working user audio
+service is still required.
+The `users` list grants permissions and lingering; `serviceUser` controls which
+account may start the unit.
+
+For a custom desktop session, `desktopUserTarget` selects the startup target
+(default: `graphical-session.target`). `desktopUserReadyTarget` selects the
+target Polaris starts after; null uses `desktopUserTarget`. These options match
+upstream's names. Ordering does not start a target or require it to be active,
+and stopping it does not stop Polaris. `startAtBoot` always uses `default.target`
+for automatic startup.
+
+Additional service environment variables can be set with
+`services.polaris-stream.environment`. The service inherits the user manager's
+PATH unless `environment.PATH` is explicitly set.
+
+Use `extraPackages` to make tools available to Polaris, launched applications,
+and preparation commands:
+
+```nix
+services.polaris-stream.extraPackages = [ pkgs.mangohud pkgs.gamemode ];
+```
+
+Their `bin` directories are prepended to the inherited or explicitly configured
+PATH. The package wrapper continues to supply its own runtime tools.
+
+To limit the module's firewall openings to selected interfaces:
+
+```nix
+services.polaris-stream = {
+  openFirewall = true;
+  firewallInterfaces = [ "enp1s0" "tailscale0" ];
+};
+```
+
+The default empty list opens ports on all interfaces. This applies to both
+GameStream and optional Browser Stream rules; it does not change Polaris's bind
+address, other firewall rules, or Avahi's separate discovery rules.
+
 ## Build Features
 
-The packaged build supports DRM/KMS, VAAPI, Vulkan Video, Wayland, X11, PipeWire, and portal capture. The following upstream features are disabled in the current package:
+The default build includes DRM/KMS, VAAPI, Vulkan Video, Wayland, X11, PipeWire,
+portal capture, and the experimental Browser Stream helper. Capture paths still
+require the appropriate host drivers and session services.
 
-- CUDA-native capture is disabled. NVIDIA encoding available through the prepared FFmpeg build is separate from Polaris's CUDA-native capture path.
-- Experimental Browser Stream support is disabled because its Go dependencies are not yet packaged for an offline Nix build.
-- The optional multiseat worker is not built. Spaces host integration is not configured by this module.
+The web UI and Go helper build separately from the C++ host. CUDA variants can
+reuse these outputs. Dynamically loaded graphics libraries use ELF RUNPATH,
+without adding a package-wide `LD_LIBRARY_PATH` to launched games. The package
+also supplies `xdg-open`, `bwrap`, `pactl`, `xrandr`, and `lspci` for upstream
+desktop, input-isolation, and diagnostic features.
 
-These exclusions are exposed as `passthru.buildFeatures` on the package so downstream automation can inspect them.
+### Browser Stream
 
-Only `x86_64-linux` is currently exposed because the prepared FFmpeg dependency is architecture-specific.
+The helper is built offline from pinned Go dependencies. Enable the feature in
+the web UI, or declaratively:
+
+```nix
+services.polaris-stream = {
+  settings.browser_streaming = true;
+  openFirewall = true;
+  openBrowserStreamFirewall = true;
+};
+```
+
+Upstream uses **UDP 47992** for WebTransport even when `settings.port` changes.
+The separate firewall option opens this fixed port; it does not enable streaming
+by itself. Upstream still labels Browser Stream experimental.
+
+### CUDA capture
+
+CUDA-native capture is optional. It can avoid GPU-to-system-memory copies on
+NVIDIA; prepared FFmpeg's NVENC encoding support is a separate feature. The
+standalone flake package defaults to CUDA disabled so it does not require unfree
+toolkit dependencies. The NixOS module builds with the host's `pkgs`, respecting
+`nixpkgs.config.cudaSupport` and package overrides.
+
+To enable CUDA just for Polaris, use the overlay and override:
+
+```nix
+nixpkgs.overlays = [ inputs.polaris-streamer.overlays.default ];
+nixpkgs.config.allowUnfree = true;
+services.polaris-stream.package = pkgs.polaris-stream.override {
+  cudaSupport = true;
+};
+```
+
+The CUDA build uses nixpkgs' compatible compiler and toolkit. NVIDIA host drivers
+must be configured separately. To omit Browser Stream, use the same package
+override with `enableBrowserStream = false`.
+
+The selected features are exposed as `passthru.buildFeatures`.
+
+### Remaining upstream integrations
+
+- The optional multiseat worker remains disabled, matching the upstream CMake
+  default. It is a container entrypoint, not a switch that enables host Spaces.
+  Spaces requires additional work: upstream's trusted Docker/runc paths are
+  incompatible with normal NixOS paths.
+- Upstream's patched Gamescope/HDR compositor, private portal service stack,
+  and Home Manager/hjem modules are not integrated here. Shipping the upstream
+  session scripts does not provide that complete stack. The labwc path is SDR.
 
 ## Overlay
 
@@ -146,11 +287,22 @@ The NixOS module does not require the overlay.
 
 ## Development
 
-Run all package and module checks with:
+Run all package and module checks on a supported Linux host with:
 
 ```text
 nix flake check --print-build-logs
 ```
+
+Evaluate both architectures without compiling the Linux host with:
+
+```text
+nix flake check --all-systems --no-build
+```
+
+CI builds on native x86-64 and ARM64 Linux runners. Full flake checks have passed
+on both native architectures, with additional ARM emulation checks on x86-64.
+The optional x86-64 CUDA variant also compiled and passed its install checks.
+GPU streaming, NVIDIA driver loading, and KMS still need hardware validation.
 
 Format Nix files with:
 
@@ -163,3 +315,8 @@ The package exposes a `passthru.updateScript` based on `nix-update`. A manual eq
 ```text
 nix run nixpkgs#nix-update -- --flake polaris-stream
 ```
+
+When updating Polaris, also verify `npmDepsHash` in `nix/web-ui.nix`,
+`vendorHash` in `nix/browser-stream-helper.nix`, the prepared FFmpeg version and
+both architecture hashes, and the small CMake patch. Build both Linux outputs;
+an updated source hash alone does not validate a release upgrade.

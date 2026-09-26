@@ -1,0 +1,25 @@
+--- a/cmake/targets/common.cmake
++++ b/cmake/targets/common.cmake
+@@ -51,6 +51,13 @@
+     set(NPM_BUILD_HOMEBREW "")
+ endif()
+ 
++# Nix builds the frontend independently of the GPU-dependent C++ host.
++if(POLARIS_WEB_UI_PREBUILT)
++    add_custom_target(web-ui ALL
++        COMMAND "${CMAKE_COMMAND}" -E copy_directory
++                "${POLARIS_WEB_UI_PREBUILT}" "${CMAKE_BINARY_DIR}/assets/web"
++        VERBATIM)
++else()
+ #WebUI build
+ find_program(NPM npm REQUIRED)
+ 
+@@ -94,6 +101,8 @@
+         VERBATIM)
+ 
+ add_custom_target(web-ui ALL DEPENDS "${WEB_UI_BUILD_STAMP}")
++
++endif()
+ 
+ add_dependencies(polaris web-ui)
+ 
