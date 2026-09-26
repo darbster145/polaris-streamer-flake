@@ -14,6 +14,16 @@ let
       --args '{path: $path, marker: $marker, helper: $helper, args: $ARGS.positional}' "$@"
   '';
   extraPackage = pkgs.writeShellScriptBin "polaris-test-helper" "exit 0";
+  externalFileName = "polaris $cash%quoted' config.conf";
+  externalFixture = pkgs.writeTextFile {
+    name = "polaris-external-config-fixture";
+    destination = "/${externalFileName}";
+    text = ''
+      encoder = vaapi
+      sunshine_name = external fixture
+    '';
+  };
+  externalFile = "${externalFixture}/${externalFileName}";
   eval =
     module:
     (lib.nixosSystem {
@@ -32,6 +42,22 @@ let
     }).config;
   defaults = eval { };
   defaultUnit = defaults.systemd.user.services.polaris-stream;
+  webUiConfig = eval {
+    services.polaris-stream = {
+      package = lib.mkForce self.packages.${system}.default;
+      settings = {
+        port = 53989;
+        headless_mode = "enabled";
+        linux_use_cage_compositor = "enabled";
+        linux_stream_mode = "headless_stream";
+        origin_web_ui_allowed = "pc";
+        enable_discovery = false;
+        enable_pairing = false;
+        upnp = false;
+        browser_streaming = false;
+      };
+    };
+  };
   configured = eval {
     services.polaris-stream = {
       openFirewall = true;
@@ -129,13 +155,19 @@ let
     services.polaris-stream = {
       extraPackages = [ extraPackage ];
       environment.PATH = "/configured/bin";
-      configFile = "/run/secrets/polaris $cash%quoted' config.conf";
+      configFile = externalFile;
     };
   };
   extraPackagesKms = eval {
     services.polaris-stream = {
       extraPackages = [ extraPackage ];
       capSysAdmin = true;
+    };
+  };
+  managedKms = eval {
+    services.polaris-stream = {
+      capSysAdmin = true;
+      settings.encoder = "vaapi";
     };
   };
   interfaceFirewall = eval {
@@ -166,21 +198,19 @@ let
         { nixpkgs.config.cudaSupport = true; }
       ];
     }).config.services.polaris-stream.package;
-  getConfigFile =
-    config:
+  getExecutable =
+    command:
     let
-      command = config.systemd.user.services.polaris-stream.serviceConfig.ExecStart;
-      path = builtins.elemAt (builtins.match ''.* "(/nix/store/[^"]+-polaris.conf)"'' command) 0;
+      quoted = builtins.match ''"([^"]+)"'' command;
+      path = if quoted == null then command else builtins.elemAt quoted 0;
     in
-    # Regex captures lose Nix string context. Retain the config's build dependency.
+    # Regex captures lose Nix string context. Retain scripts and their source dependencies.
     builtins.appendContext path (builtins.getContext command);
   getLauncher =
+    config: getExecutable config.systemd.user.services.polaris-stream.serviceConfig.ExecStart;
+  getPreparation =
     config:
-    let
-      command = config.systemd.user.services.polaris-stream.serviceConfig.ExecStart;
-      path = builtins.elemAt (builtins.match ''"([^"]+)"'' command) 0;
-    in
-    builtins.appendContext path (builtins.getContext command);
+    getExecutable (lib.last config.systemd.user.services.polaris-stream.serviceConfig.ExecStartPre);
   polarisFailedAssertions =
     config:
     builtins.filter (
@@ -204,7 +234,9 @@ let
       message = "The module's default package must honor the host nixpkgs CUDA configuration.";
     }
     {
-      condition = defaultUnit.serviceConfig.ExecStart == "\"${lib.getExe stubPackage}\"";
+      condition =
+        defaultUnit.serviceConfig.ExecStart == "\"${lib.getExe stubPackage}\""
+        && !(defaultUnit.serviceConfig ? RuntimeDirectory);
       message = "Default settings must keep upstream's writable configuration path.";
     }
     {
@@ -352,14 +384,13 @@ let
     }
     {
       condition =
-        runtimeConfig.systemd.user.services.polaris-stream.serviceConfig.ExecStart
-        == "\"${lib.getExe stubPackage}\" \"/run/secrets/polaris.conf\""
+        lib.take 3 runtimeConfig.systemd.user.services.polaris-stream.serviceConfig.ExecStartPre == [
+          "${pkgs.coreutils}/bin/sleep 5"
+          "\"${pkgs.coreutils}/bin/test\" \"-f\" \"/run/secrets/polaris.conf\""
+          "\"${pkgs.coreutils}/bin/test\" \"-r\" \"/run/secrets/polaris.conf\""
+        ]
         &&
-          runtimeConfig.systemd.user.services.polaris-stream.serviceConfig.ExecStartPre == [
-            "${pkgs.coreutils}/bin/sleep 5"
-            "\"${pkgs.coreutils}/bin/test\" \"-f\" \"/run/secrets/polaris.conf\""
-            "\"${pkgs.coreutils}/bin/test\" \"-r\" \"/run/secrets/polaris.conf\""
-          ]
+          builtins.length runtimeConfig.systemd.user.services.polaris-stream.serviceConfig.ExecStartPre == 4
         &&
           runtimeConfig.networking.firewall.allowedTCPPorts == [
             48984
@@ -370,7 +401,25 @@ let
         && polarisFailedAssertions runtimeConfig == [ ]
         && polarisFailedAssertions conflictingRuntimeSettings != [ ]
         && polarisFailedAssertions conflictingRuntimeApps != [ ];
-      message = "Runtime configuration must bypass the store file, accept firewall port metadata and reject declarative conflicts.";
+      message = "External configuration must retain preflight checks, prepare a runtime copy, accept port metadata and reject declarative conflicts.";
+    }
+    {
+      condition =
+        builtins.all
+          (
+            config:
+            config.systemd.user.services.polaris-stream.serviceConfig.RuntimeDirectory == "polaris-stream"
+            && config.systemd.user.services.polaris-stream.serviceConfig.RuntimeDirectoryMode == "0700"
+            && lib.hasSuffix "-polaris-stream-launch" (getLauncher config)
+          )
+          [
+            configured
+            runtimeConfig
+            extraPackagesConfig
+            managedKms
+          ]
+        && builtins.length configured.systemd.user.services.polaris-stream.serviceConfig.ExecStartPre == 2;
+      message = "Managed configurations must launch from a private user-owned runtime directory with a preparation step.";
     }
     {
       condition =
@@ -428,17 +477,50 @@ let
 in
 {
   package = self.packages.${system}.default;
+  web-ui = pkgs.runCommand "polaris-stream-web-ui-check" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+    python ${./tests/web-ui.py} \
+      --prepare "${getPreparation webUiConfig}" \
+      --launcher "${getLauncher webUiConfig}" \
+      --port ${toString webUiConfig.services.polaris-stream.settings.port}
+    touch "$out"
+  '';
   module =
     assert lib.all (entry: lib.assertMsg entry.condition entry.message) moduleAssertions;
     pkgs.runCommand "polaris-stream-module-check" { nativeBuildInputs = [ pkgs.jq ]; } ''
-      grep -Fx 'trusted_subnets = ["10.0.0.0/24","192.168.0.0/16"]' "${getConfigFile configured}"
-      grep -Fx 'global_prep_cmd = [{"do":"true","elevated":false,"undo":"true"}]' "${getConfigFile configured}"
+      mkdir -m 700 generated-runtime port-runtime env-runtime external-runtime
+      RUNTIME_DIRECTORY="$PWD/generated-runtime" "${getPreparation configured}"
+      RUNTIME_DIRECTORY="$PWD/port-runtime" "${getPreparation changedPort}"
+      RUNTIME_DIRECTORY="$PWD/env-runtime" "${getPreparation envOnly}"
+      RUNTIME_DIRECTORY="$PWD/external-runtime" "${getPreparation extraPackagesConfig}"
+      for directory in generated-runtime port-runtime env-runtime external-runtime; do
+        test "$(stat -c %a "$directory/polaris.conf")" = 600
+        test "$(stat -c %u "$directory/polaris.conf")" = "$(id -u)"
+        test ! -L "$directory/polaris.conf"
+      done
+
+      grep -Fx 'trusted_subnets = ["10.0.0.0/24","192.168.0.0/16"]' generated-runtime/polaris.conf
+      grep -Fx 'global_prep_cmd = [{"do":"true","elevated":false,"undo":"true"}]' generated-runtime/polaris.conf
       jq -e '.apps[0].name == "Test application" and .apps[0].cmd == "true"' \
         "${configured.services.polaris-stream.settings.file_apps}"
-      grep -Fx 'port = 48989' "${getConfigFile changedPort}"
-      grep -Fx 'file_apps = ${envOnly.services.polaris-stream.settings.file_apps}' "${getConfigFile envOnly}"
+      grep -Fx 'port = 48989' port-runtime/polaris.conf
+      grep -Fx 'file_apps = ${envOnly.services.polaris-stream.settings.file_apps}' env-runtime/polaris.conf
       jq -e '.env.TEST == "environment only" and .apps == []' \
         "${envOnly.services.polaris-stream.settings.file_apps}"
+      cmp ${lib.escapeShellArg externalFile} external-runtime/polaris.conf
+
+      # UI edits are writable for this user, but the source is reapplied at startup.
+      cp generated-runtime/polaris.conf expected-generated.conf
+      printf '\nsunshine_name = temporary UI edit\n' >> generated-runtime/polaris.conf
+      printf '\nsunshine_name = temporary UI edit\n' >> external-runtime/polaris.conf
+      RUNTIME_DIRECTORY="$PWD/generated-runtime" "${getPreparation configured}"
+      RUNTIME_DIRECTORY="$PWD/external-runtime" "${getPreparation extraPackagesConfig}"
+      cmp expected-generated.conf generated-runtime/polaris.conf
+      cmp ${lib.escapeShellArg externalFile} external-runtime/polaris.conf
+
+      RUNTIME_DIRECTORY="$PWD/generated-runtime" PATH="/untouched path/bin" \
+        "${getLauncher configured}" > managed.json
+      jq -e --arg config "$PWD/generated-runtime/polaris.conf" \
+        '.path == "/untouched path/bin" and .args == [$config]' managed.json
 
       PATH="/inherited path/bin" POLARIS_TEST_MARKER="inherited" \
         "${getLauncher extraPackages}" > inherited.json
@@ -452,12 +534,14 @@ in
         '.path == $path and .args == []' empty-path.json
 
       PATH="${extraPackagesConfig.systemd.user.services.polaris-stream.environment.PATH}" \
-        POLARIS_TEST_MARKER="configured" "${getLauncher extraPackagesConfig}" > configured.json
+        POLARIS_TEST_MARKER="configured" RUNTIME_DIRECTORY="$PWD/external-runtime" \
+        "${getLauncher extraPackagesConfig}" > configured.json
       jq -e --arg prefix "${lib.makeBinPath [ extraPackage ]}:" \
-        --arg config ${lib.escapeShellArg extraPackagesConfig.services.polaris-stream.configFile} \
+        --arg config "$PWD/external-runtime/polaris.conf" \
         '.path == ($prefix + "/configured/bin") and .marker == "configured" and .args == [$config]' \
         configured.json
       grep -F '${extraPackagesKms.security.wrapperDir}/polaris-stream' "${getLauncher extraPackagesKms}"
+      grep -F '${managedKms.security.wrapperDir}/polaris-stream' "${getLauncher managedKms}"
       touch "$out"
     '';
 }

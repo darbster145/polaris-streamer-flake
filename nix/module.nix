@@ -75,19 +75,32 @@ let
   serviceUsers = lib.unique (cfg.users ++ lib.optional (cfg.serviceUser != null) cfg.serviceUser);
   readyTarget =
     if cfg.desktopUserReadyTarget != null then cfg.desktopUserReadyTarget else cfg.desktopUserTarget;
+  configSource =
+    if cfg.configFile != null then
+      cfg.configFile
+    else if hasCustomConfig then
+      "${generatedConfigFile}"
+    else
+      null;
   serviceCommand = [
     (if cfg.capSysAdmin then "${config.security.wrapperDir}/polaris-stream" else getExe cfg.package)
-  ]
-  ++ (
-    if cfg.configFile != null then
-      [ cfg.configFile ]
-    else
-      optionals hasCustomConfig [ "${generatedConfigFile}" ]
-  );
+  ];
+  # Upstream's web API requires an owned regular config file and creates an
+  # adjacent lock file even for reads. Store paths and secret symlinks fail that
+  # check, so retain the source and use a private runtime copy.
+  prepareConfig = pkgs.writeShellScript "polaris-stream-prepare-config" ''
+    set -eu
+    umask 077
+    ${pkgs.coreutils}/bin/install -m 0600 ${lib.escapeShellArg configSource} "$RUNTIME_DIRECTORY/polaris.conf"
+  '';
   # Expand the inherited PATH at runtime, which systemd's Environment= cannot do.
   serviceLauncher = pkgs.writeShellScript "polaris-stream-launch" ''
-    export PATH=${lib.escapeShellArg (lib.makeBinPath cfg.extraPackages)}"''${PATH:+:$PATH}"
-    exec ${lib.escapeShellArgs serviceCommand}
+    ${lib.optionalString (cfg.extraPackages != [ ]) ''
+      export PATH=${lib.escapeShellArg (lib.makeBinPath cfg.extraPackages)}"''${PATH:+:$PATH}"
+    ''}
+    exec ${lib.escapeShellArgs serviceCommand} ${
+      lib.optionalString (configSource != null) ''"$RUNTIME_DIRECTORY/polaris.conf"''
+    }
   '';
   firewallPorts = {
     allowedTCPPorts = optionals cfg.openFirewall (
@@ -282,8 +295,10 @@ in
         Absolute path to an externally managed Polaris configuration, read at
         runtime without copying its contents into the Nix store. Use a quoted
         string, not a Nix path literal. The file must exist and be readable by
-        the service account before startup; web UI edits also require it to be
-        writable. Paths containing newlines or '=' are unsupported by the
+        the service account before startup. The module copies it into a private
+        runtime directory to satisfy upstream ownership and locking checks.
+        Web UI edits affect only that copy and are reset at each service start.
+        Paths containing newlines or '=' are unsupported by the
         module or upstream's command-line parser. Cannot be combined with
         applications or settings other than settings.port. When used here,
         settings.port only determines generated firewall rules and must match
@@ -294,9 +309,10 @@ in
     settings = mkOption {
       default = { };
       description = ''
-        Settings rendered into an immutable Polaris configuration file. When any
-        non-default setting is present, the configuration is managed through Nix
-        and cannot be persisted through the web UI.
+        Settings rendered into a Polaris configuration source in the Nix store.
+        When any non-default setting is present, the module copies this source
+        to a private user-owned runtime file at each service start. Web UI edits
+        affect only that copy and are reset when the service starts again.
 
         Lists and attribute sets are rendered as JSON values. Do not put secrets
         here because generated Nix store files are readable by all local users.
@@ -456,27 +472,37 @@ in
 
       serviceConfig = {
         ExecStartPre =
-          if cfg.configFile == null then
+          if configSource == null then
             "${pkgs.coreutils}/bin/sleep 5"
           else
-            [ "${pkgs.coreutils}/bin/sleep 5" ]
-            ++
-              map
-                (
-                  flag:
-                  escapeSystemdExecArgs [
-                    "${pkgs.coreutils}/bin/test"
-                    flag
-                    cfg.configFile
+            (
+              [ "${pkgs.coreutils}/bin/sleep 5" ]
+              ++ optionals (cfg.configFile != null) (
+                map
+                  (
+                    flag:
+                    escapeSystemdExecArgs [
+                      "${pkgs.coreutils}/bin/test"
+                      flag
+                      cfg.configFile
+                    ]
+                  )
+                  [
+                    "-f"
+                    "-r"
                   ]
-                )
-                [
-                  "-f"
-                  "-r"
-                ];
+              )
+              ++ [ "${prepareConfig}" ]
+            );
         ExecStart = escapeSystemdExecArgs (
-          if cfg.extraPackages == [ ] then serviceCommand else [ "${serviceLauncher}" ]
+          if cfg.extraPackages == [ ] && configSource == null then
+            serviceCommand
+          else
+            [ "${serviceLauncher}" ]
         );
+        RuntimeDirectory = mkIf (configSource != null) "polaris-stream";
+        RuntimeDirectoryMode = mkIf (configSource != null) "0700";
+        RuntimeDirectoryPreserve = mkIf (configSource != null) "restart";
         LimitNICE = -10;
         LimitRTPRIO = 95;
         Restart = "on-failure";

@@ -69,7 +69,13 @@ The web UI is served over HTTPS at `https://localhost:<port + 1>`. With the exam
 
 ## Declarative Configuration
 
-When `settings` contains anything except the default port, the module generates an immutable `polaris.conf` in the Nix store. The web UI can read those settings but cannot persist changes to that file. Manage the complete configuration through Nix, or leave `settings` at its default and configure Polaris through the web UI.
+When `settings` contains anything except the default port, the module generates
+a configuration source in the Nix store and copies it to a private, user-owned
+runtime directory at every service start. Polaris requires an owned regular
+file and an adjacent lock file even when the web UI only reads configuration.
+Web UI edits affect the runtime copy and are reset on restart. Manage the
+complete configuration through Nix, or leave `settings` at its default and
+configure Polaris through the web UI.
 
 Do not place passwords, API keys, tokens, cookies, or other secrets in `settings`. Nix store files are readable by all local users. The module emits a warning for common secret-looking setting names, but that check is not a substitute for keeping secrets out of the store.
 
@@ -96,15 +102,23 @@ services.polaris-stream = {
 };
 ```
 
-The module passes this path directly to Polaris without reading or copying the
-file into the Nix store. Startup checks that it exists as a regular file and is
-readable by the service account. Provision it before the service starts; web UI
-edits require write access too. `configFile` cannot be combined with declarative
+The module reads this source at service startup and copies it into the same
+private runtime directory, without putting its contents in the Nix store or
+modifying the original. This supports secret-manager symlinks and read-only
+source files. The source must resolve to a regular file readable by the service
+account. Provision it before startup; web UI edits to the copy are reset on
+restart. `configFile` cannot be combined with declarative
 `applications` or settings other than `settings.port`. In this mode,
 `settings.port` only determines firewall rules; it does not override the file.
 With the default value, the file must also use port 47989 when opening stream
 ports. Relative paths inside the file still resolve under Polaris's usual
 configuration directory, not alongside the external file.
+
+Managed config copies use a directory with mode 0700 and a file with mode 0600
+under the user's runtime directory. The directory survives service restarts,
+but is removed on a full stop or reboot. Configuration-adjacent portal consent
+tokens have the same lifetime, so portal capture may require consent again.
+Credentials and pairing state remain in Polaris's normal configuration directory.
 
 ## Applications
 
@@ -301,6 +315,8 @@ nix flake check --all-systems --no-build
 
 CI builds on native x86-64 and ARM64 Linux runners. Full flake checks have passed
 on both native architectures, with additional ARM emulation checks on x86-64.
+Checks include isolated web UI credential creation, a fresh login, and an
+authenticated configuration request against the actual Polaris binary.
 The optional x86-64 CUDA variant also compiled and passed its install checks.
 GPU streaming, NVIDIA driver loading, and KMS still need hardware validation.
 
